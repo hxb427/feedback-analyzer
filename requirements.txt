@@ -5,3 +5,4 @@ pandas
 transformers
 wordcloud
 matplotlib
+torch
