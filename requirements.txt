@@ -1,0 +1,7 @@
+streamlit
+praw
+requests
+pandas
+transformers
+wordcloud
+matplotlib
