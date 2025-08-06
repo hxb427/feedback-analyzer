@@ -64,8 +64,8 @@ def clean_text(text):
     return text
 
 @st.cache_data
-def collect_reddit_data(client_id, client_secret, user_agent, subreddits, time_ranges):
-    """Collect data from Reddit"""
+def collect_reddit_data(client_id, client_secret, user_agent, subreddits, time_ranges, target_posts=3000):
+    """Collect data from Reddit with enhanced collection strategy"""
     try:
         reddit = praw.Reddit(
             client_id=client_id,
@@ -77,30 +77,56 @@ def collect_reddit_data(client_id, client_secret, user_agent, subreddits, time_r
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        total_operations = len(subreddits) * len(time_ranges)
+        # Enhanced collection strategy
+        collection_methods = ['top', 'hot', 'new', 'rising']
+        total_operations = len(subreddits) * len(time_ranges) * len(collection_methods)
         current_operation = 0
+        posts_per_operation = max(100, target_posts // total_operations)
         
         for subreddit_name in subreddits:
-            subreddit = reddit.subreddit(subreddit_name)
-            for time_filter in time_ranges:
-                status_text.text(f"Collecting from r/{subreddit_name} ({time_filter})...")
+            try:
+                subreddit = reddit.subreddit(subreddit_name)
                 
-                try:
-                    for post in subreddit.top(time_filter=time_filter, limit=200):
-                        reddit_posts.append({
-                            "source": "Reddit",
-                            "subreddit": subreddit_name,
-                            "title": post.title,
-                            "text": post.selftext,
-                            "score": post.score,
-                            "link": f"https://www.reddit.com{post.permalink}"
-                        })
-                except Exception as e:
-                    st.warning(f"Error collecting from r/{subreddit_name} ({time_filter}): {str(e)}")
-                
-                current_operation += 1
-                progress_bar.progress(current_operation / total_operations)
-                time.sleep(0.1)
+                for time_filter in time_ranges:
+                    for method in collection_methods:
+                        status_text.text(f"Collecting from r/{subreddit_name} ({method} - {time_filter})...")
+                        
+                        try:
+                            if method == 'top':
+                                posts = subreddit.top(time_filter=time_filter, limit=posts_per_operation)
+                            elif method == 'hot':
+                                posts = subreddit.hot(limit=posts_per_operation)
+                            elif method == 'new':
+                                posts = subreddit.new(limit=posts_per_operation)
+                            elif method == 'rising':
+                                posts = subreddit.rising(limit=posts_per_operation)
+                            
+                            for post in posts:
+                                reddit_posts.append({
+                                    "source": "Reddit",
+                                    "subreddit": subreddit_name,
+                                    "title": post.title,
+                                    "text": post.selftext,
+                                    "score": post.score,
+                                    "link": f"https://www.reddit.com{post.permalink}",
+                                    "method": method
+                                })
+                                
+                                # Stop if we've reached target
+                                if len(reddit_posts) >= target_posts:
+                                    progress_bar.empty()
+                                    status_text.empty()
+                                    return reddit_posts
+                                    
+                        except Exception as e:
+                            st.warning(f"Error collecting from r/{subreddit_name} ({method}-{time_filter}): {str(e)}")
+                        
+                        current_operation += 1
+                        progress_bar.progress(min(current_operation / total_operations, 0.99))
+                        time.sleep(0.05)  # Reduced delay for faster collection
+                        
+            except Exception as e:
+                st.warning(f"Error accessing subreddit r/{subreddit_name}: {str(e)}")
         
         progress_bar.empty()
         status_text.empty()
@@ -111,48 +137,110 @@ def collect_reddit_data(client_id, client_secret, user_agent, subreddits, time_r
         return []
 
 @st.cache_data
-def collect_stackoverflow_data(tags, max_pages=5):
-    """Collect data from Stack Overflow"""
-    url = "https://api.stackexchange.com/2.3/search"
-    params = {
-        "order": "desc",
-        "sort": "activity",
-        "tagged": tags,
-        "site": "stackoverflow",
-        "pagesize": 100
-    }
+def collect_stackoverflow_data(tags, target_posts=2000):
+    """Collect data from Stack Overflow with enhanced collection strategy"""
+    base_url = "https://api.stackexchange.com/2.3"
+    
+    # Multiple search strategies for better coverage
+    search_strategies = [
+        {"endpoint": "/search", "sort": "activity"},
+        {"endpoint": "/search", "sort": "votes"},
+        {"endpoint": "/search", "sort": "creation"},
+        {"endpoint": "/questions", "sort": "activity"},
+        {"endpoint": "/questions", "sort": "votes"},
+        {"endpoint": "/questions", "sort": "hot"},
+        {"endpoint": "/questions", "sort": "week"},
+        {"endpoint": "/questions", "sort": "month"}
+    ]
     
     stack_posts = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    for page in range(1, max_pages + 1):
-        status_text.text(f"Collecting Stack Overflow data - Page {page}/{max_pages}...")
-        params["page"] = page
+    posts_per_strategy = target_posts // len(search_strategies)
+    max_pages_per_strategy = max(10, posts_per_strategy // 100)
+    
+    for strategy_idx, strategy in enumerate(search_strategies):
+        endpoint = strategy["endpoint"]
+        sort_method = strategy["sort"]
         
-        try:
-            response = requests.get(url, params=params)
-            data = response.json()
+        params = {
+            "order": "desc",
+            "sort": sort_method,
+            "site": "stackoverflow",
+            "pagesize": 100
+        }
+        
+        # Add tags for search endpoints
+        if endpoint == "/search":
+            params["tagged"] = tags
+        elif endpoint == "/questions":
+            params["tagged"] = tags
+        
+        url = base_url + endpoint
+        
+        for page in range(1, max_pages_per_strategy + 1):
+            status_text.text(f"Stack Overflow ({sort_method}) - Page {page}/{max_pages_per_strategy}...")
+            params["page"] = page
             
-            for item in data.get("items", []):
-                stack_posts.append({
-                    "source": "Stack Overflow",
-                    "title": item.get("title", ""),
-                    "text": "",
-                    "score": item.get("score", 0),
-                    "comments": "",
-                    "link": item.get("link", "")
-                })
-            
-            if not data.get("has_more", False):
-                break
+            try:
+                response = requests.get(url, params=params)
+                if response.status_code != 200:
+                    st.warning(f"API rate limit or error for {sort_method}: {response.status_code}")
+                    time.sleep(2)
+                    continue
+                    
+                data = response.json()
                 
-        except Exception as e:
-            st.warning(f"Error collecting Stack Overflow data: {str(e)}")
-            break
+                # Check for API errors
+                if "error_message" in data:
+                    st.warning(f"API Error: {data['error_message']}")
+                    break
+                
+                items = data.get("items", [])
+                if not items:
+                    break
+                
+                for item in items:
+                    # Extract body text if available
+                    body_text = ""
+                    if "body" in item:
+                        body_text = item["body"][:500]  # Limit body text
+                    
+                    stack_posts.append({
+                        "source": "Stack Overflow",
+                        "title": item.get("title", ""),
+                        "text": body_text,
+                        "score": item.get("score", 0),
+                        "comments": "",
+                        "link": item.get("link", ""),
+                        "tags": ", ".join(item.get("tags", [])),
+                        "method": sort_method
+                    })
+                    
+                    # Stop if we've reached target
+                    if len(stack_posts) >= target_posts:
+                        progress_bar.empty()
+                        status_text.empty()
+                        return stack_posts
+                
+                # Check if more pages exist
+                if not data.get("has_more", False):
+                    break
+                    
+                # Respect API rate limits
+                time.sleep(0.1)
+                
+            except Exception as e:
+                st.warning(f"Error collecting Stack Overflow data ({sort_method}): {str(e)}")
+                time.sleep(1)
+                continue
         
-        progress_bar.progress(page / max_pages)
-        time.sleep(0.5)
+        # Update progress
+        progress_bar.progress((strategy_idx + 1) / len(search_strategies))
+        
+        # Brief pause between strategies
+        time.sleep(0.2)
     
     progress_bar.empty()
     status_text.empty()
@@ -317,31 +405,66 @@ def main():
     
     with st.expander("Reddit API Configuration", expanded=not st.session_state.data_collected):
         col1, col2 = st.columns(2)
+        
+        # Try to get credentials from secrets, fallback to user input
+        default_client_id = ""
+        default_client_secret = ""
+        default_user_agent = "feedback_analyzer_app"
+        
+        try:
+            default_client_id = st.secrets["reddit"]["client_id"]
+            default_client_secret = st.secrets["reddit"]["client_secret"]
+            default_user_agent = st.secrets["reddit"]["user_agent"]
+            st.info("✅ Using Reddit credentials from secrets")
+        except:
+            st.warning("⚠️ No Reddit credentials found in secrets. Please enter manually or configure secrets for deployment.")
+        
         with col1:
-            reddit_client_id = st.text_input("Reddit Client ID", value="XdmrvmxBpZkQrMlvmk9gaw")
+            reddit_client_id = st.text_input("Reddit Client ID", value=default_client_id)
             reddit_client_secret = st.text_input("Reddit Client Secret", type="password", 
-                                                value="6bnOp66d1wmBtWlE93qZwrV6NLIM8Q")
+                                                value=default_client_secret)
         with col2:
-            user_agent = st.text_input("User Agent", value="vsc_feedback_analysis")
+            user_agent = st.text_input("User Agent", value=default_user_agent)
             subreddits = st.multiselect("Subreddits", 
                                        options=["vscode", "VisualStudio", "programming", "webdev"],
                                        default=["vscode"])
     
     with st.expander("Stack Overflow Configuration", expanded=not st.session_state.data_collected):
-        so_tags = st.text_input("Stack Overflow Tags", value="visual-studio")
-        max_pages = st.slider("Max Pages to Collect", 1, 10, 3)
+        so_tags = st.text_input("Stack Overflow Tags", value="visual-studio-code,vscode,visual-studio")
+        
+    with st.expander("Collection Settings", expanded=not st.session_state.data_collected):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            reddit_target = st.number_input("Reddit Posts Target", min_value=500, max_value=10000, value=3000, step=500)
+        with col2:
+            stackoverflow_target = st.number_input("Stack Overflow Posts Target", min_value=500, max_value=10000, value=2000, step=500)
+        with col3:
+            total_target = reddit_target + stackoverflow_target
+            st.metric("Total Target", f"{total_target:,}")
+            
+        # Add more subreddit options
+        additional_subreddits = st.multiselect("Additional Subreddits (for more data)", 
+                                             options=["VisualStudio", "programming", "webdev", "learnprogramming", 
+                                                    "javascript", "Python", "reactjs", "node", "webdevelopment"],
+                                             help="Select more subreddits to reach your target posts")
     
     # Data collection button
     if st.button("🚀 Collect Data", type="primary"):
         if reddit_client_id and reddit_client_secret and subreddits:
             with st.spinner("Collecting data..."):
+                # Combine all selected subreddits
+                all_subreddits = list(set(subreddits + additional_subreddits))
+                
+                # Show collection plan
+                st.info(f"📊 Collection Plan: {len(all_subreddits)} subreddits, targeting {reddit_target:,} Reddit posts and {stackoverflow_target:,} Stack Overflow posts")
+                
                 # Collect Reddit data
-                time_ranges = ["day", "week", "month"]
+                time_ranges = ["day", "week", "month", "year"]  # Added 'year' for more data
                 reddit_posts = collect_reddit_data(reddit_client_id, reddit_client_secret, 
-                                                 user_agent, subreddits, time_ranges)
+                                                 user_agent, all_subreddits, time_ranges, reddit_target)
                 
                 # Collect Stack Overflow data
-                stack_posts = collect_stackoverflow_data(so_tags, max_pages)
+                stack_posts = collect_stackoverflow_data(so_tags, stackoverflow_target)
                 
                 # Combine and process data
                 all_posts = reddit_posts + stack_posts
@@ -369,7 +492,26 @@ def main():
                 st.session_state.df_all = df_all
                 st.session_state.data_collected = True
                 
-                st.success(f"✅ Data collection completed! Collected {len(df_all)} posts.")
+                # Show detailed collection results
+                reddit_count = len([p for p in all_posts if p['source'] == 'Reddit'])
+                so_count = len([p for p in all_posts if p['source'] == 'Stack Overflow'])
+                
+                st.success(f"✅ Data collection completed!")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Reddit Posts", f"{reddit_count:,}", f"{reddit_count - reddit_target:+,}")
+                with col2:
+                    st.metric("Stack Overflow Posts", f"{so_count:,}", f"{so_count - stackoverflow_target:+,}")
+                with col3:
+                    total_collected = reddit_count + so_count
+                    st.metric("Total Collected", f"{total_collected:,}", f"{total_collected - total_target:+,}")
+                
+                if total_collected >= 5000:
+                    st.balloons()
+                    st.success("🎉 Target of 5000+ posts achieved!")
+                elif total_collected >= total_target:
+                    st.success("🎯 Collection target met!")
         else:
             st.error("Please provide Reddit API credentials and select subreddits.")
     
