@@ -317,26 +317,12 @@ def main():
     
     with st.expander("Reddit API Configuration", expanded=not st.session_state.data_collected):
         col1, col2 = st.columns(2)
-        
-        # Try to get credentials from secrets, fallback to user input
-        default_client_id = ""
-        default_client_secret = ""
-        default_user_agent = "feedback_analyzer_app"
-        
-        try:
-            default_client_id = st.secrets["reddit"]["client_id"]
-            default_client_secret = st.secrets["reddit"]["client_secret"]
-            default_user_agent = st.secrets["reddit"]["user_agent"]
-            st.info("✅ Using Reddit credentials from secrets")
-        except:
-            st.warning("⚠️ No Reddit credentials found in secrets. Please enter manually or configure secrets for deployment.")
-        
         with col1:
-            reddit_client_id = st.text_input("Reddit Client ID", value=default_client_id)
+            reddit_client_id = st.text_input("Reddit Client ID", value="XdmrvmxBpZkQrMlvmk9gaw")
             reddit_client_secret = st.text_input("Reddit Client Secret", type="password", 
-                                                value=default_client_secret)
+                                                value="6bnOp66d1wmBtWlE93qZwrV6NLIM8Q")
         with col2:
-            user_agent = st.text_input("User Agent", value=default_user_agent)
+            user_agent = st.text_input("User Agent", value="vsc_feedback_analysis")
             subreddits = st.multiselect("Subreddits", 
                                        options=["vscode", "VisualStudio", "programming", "webdev"],
                                        default=["vscode"])
