@@ -138,112 +138,130 @@ def collect_reddit_data(client_id, client_secret, user_agent, subreddits, time_r
 
 @st.cache_data
 def collect_stackoverflow_data(tags, target_posts=2000):
-    """Collect data from Stack Overflow with enhanced collection strategy"""
-    base_url = "https://api.stackexchange.com/2.3"
-    
-    # Multiple search strategies for better coverage
-    search_strategies = [
-        {"endpoint": "/search", "sort": "activity"},
-        {"endpoint": "/search", "sort": "votes"},
-        {"endpoint": "/search", "sort": "creation"},
-        {"endpoint": "/questions", "sort": "activity"},
-        {"endpoint": "/questions", "sort": "votes"},
-        {"endpoint": "/questions", "sort": "hot"},
-        {"endpoint": "/questions", "sort": "week"},
-        {"endpoint": "/questions", "sort": "month"}
-    ]
-    
+    """Collect data from Stack Overflow - simplified and reliable approach"""
     stack_posts = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    posts_per_strategy = target_posts // len(search_strategies)
-    max_pages_per_strategy = max(10, posts_per_strategy // 100)
+    # Simplified search strategies that are more reliable
+    search_configs = [
+        {"endpoint": "search", "sort": "activity", "order": "desc"},
+        {"endpoint": "search", "sort": "votes", "order": "desc"},
+        {"endpoint": "search", "sort": "creation", "order": "desc"},
+        {"endpoint": "questions", "sort": "activity", "order": "desc"},
+        {"endpoint": "questions", "sort": "votes", "order": "desc"}
+    ]
     
-    for strategy_idx, strategy in enumerate(search_strategies):
-        endpoint = strategy["endpoint"]
-        sort_method = strategy["sort"]
+    posts_per_config = target_posts // len(search_configs)
+    max_pages = max(5, posts_per_config // 100)
+    
+    for config_idx, config in enumerate(search_configs):
+        endpoint = config["endpoint"]
+        sort_method = config["sort"]
+        order = config["order"]
         
-        params = {
-            "order": "desc",
-            "sort": sort_method,
-            "site": "stackoverflow",
-            "pagesize": 100
-        }
+        status_text.text(f"Collecting Stack Overflow data ({sort_method})...")
         
-        # Add tags for search endpoints
-        if endpoint == "/search":
-            params["tagged"] = tags
-        elif endpoint == "/questions":
-            params["tagged"] = tags
+        # Base URL for Stack Exchange API
+        base_url = f"https://api.stackexchange.com/2.3/{endpoint}"
         
-        url = base_url + endpoint
-        
-        for page in range(1, max_pages_per_strategy + 1):
-            status_text.text(f"Stack Overflow ({sort_method}) - Page {page}/{max_pages_per_strategy}...")
-            params["page"] = page
-            
+        for page in range(1, max_pages + 1):
             try:
-                response = requests.get(url, params=params)
+                # Build parameters
+                params = {
+                    "order": order,
+                    "sort": sort_method,
+                    "site": "stackoverflow",
+                    "pagesize": 100,
+                    "page": page,
+                    "tagged": tags
+                }
+                
+                # Make API request
+                response = requests.get(base_url, params=params)
+                
+                # Debug: Show the actual URL being called
+                if page == 1:
+                    st.write(f"Debug: Calling {response.url}")
+                
                 if response.status_code != 200:
-                    st.warning(f"API rate limit or error for {sort_method}: {response.status_code}")
-                    time.sleep(2)
-                    continue
-                    
-                data = response.json()
+                    st.warning(f"Stack Overflow API returned status {response.status_code}")
+                    if response.status_code == 429:  # Rate limit
+                        time.sleep(5)
+                        continue
+                    break
+                
+                try:
+                    data = response.json()
+                except:
+                    st.error(f"Failed to parse JSON response: {response.text[:200]}")
+                    break
                 
                 # Check for API errors
                 if "error_message" in data:
-                    st.warning(f"API Error: {data['error_message']}")
+                    st.error(f"Stack Overflow API Error: {data['error_message']}")
                     break
                 
+                # Get items from response
                 items = data.get("items", [])
                 if not items:
+                    st.info(f"No more items found for {sort_method} on page {page}")
                     break
                 
+                # Process each item
                 for item in items:
-                    # Extract body text if available
-                    body_text = ""
-                    if "body" in item:
-                        body_text = item["body"][:500]  # Limit body text
-                    
                     stack_posts.append({
                         "source": "Stack Overflow",
                         "title": item.get("title", ""),
-                        "text": body_text,
+                        "text": "",  # Stack Overflow search API doesn't return body by default
                         "score": item.get("score", 0),
                         "comments": "",
                         "link": item.get("link", ""),
                         "tags": ", ".join(item.get("tags", [])),
-                        "method": sort_method
+                        "method": sort_method,
+                        "view_count": item.get("view_count", 0),
+                        "answer_count": item.get("answer_count", 0)
                     })
                     
                     # Stop if we've reached target
                     if len(stack_posts) >= target_posts:
                         progress_bar.empty()
                         status_text.empty()
+                        st.success(f"Stack Overflow: Collected {len(stack_posts)} posts (target reached)")
                         return stack_posts
                 
-                # Check if more pages exist
+                # Check if there are more pages
                 if not data.get("has_more", False):
                     break
                     
-                # Respect API rate limits
+                # Rate limiting
                 time.sleep(0.1)
                 
+            except requests.exceptions.RequestException as e:
+                st.error(f"Network error collecting Stack Overflow data: {str(e)}")
+                time.sleep(2)
+                continue
             except Exception as e:
-                st.warning(f"Error collecting Stack Overflow data ({sort_method}): {str(e)}")
-                time.sleep(1)
+                st.error(f"Unexpected error collecting Stack Overflow data: {str(e)}")
                 continue
         
         # Update progress
-        progress_bar.progress((strategy_idx + 1) / len(search_strategies))
+        progress_bar.progress((config_idx + 1) / len(search_configs))
         
-        # Brief pause between strategies
-        time.sleep(0.2)
+        # Show current count
+        st.info(f"Stack Overflow: Collected {len(stack_posts)} posts so far...")
+        
+        # Brief pause between different search methods
+        time.sleep(0.5)
     
     progress_bar.empty()
     status_text.empty()
+    
+    if stack_posts:
+        st.success(f"Stack Overflow: Successfully collected {len(stack_posts)} posts")
+    else:
+        st.warning("Stack Overflow: No posts were collected. This might be due to API issues or invalid tags.")
+    
     return stack_posts
 
 @st.cache_data
@@ -430,7 +448,29 @@ def main():
                                        default=["vscode"])
     
     with st.expander("Stack Overflow Configuration", expanded=not st.session_state.data_collected):
-        so_tags = st.text_input("Stack Overflow Tags", value="visual-studio-code,vscode,visual-studio")
+        so_tags = st.text_input("Stack Overflow Tags", value="visual-studio-code")
+        
+        # Add a test button for Stack Overflow API
+        if st.button("🧪 Test Stack Overflow API"):
+            with st.spinner("Testing Stack Overflow API..."):
+                test_url = f"https://api.stackexchange.com/2.3/search?order=desc&sort=activity&tagged={so_tags}&site=stackoverflow&pagesize=5"
+                try:
+                    response = requests.get(test_url)
+                    st.write(f"**Test URL:** {test_url}")
+                    st.write(f"**Status Code:** {response.status_code}")
+                    if response.status_code == 200:
+                        data = response.json()
+                        items = data.get("items", [])
+                        st.write(f"**Items Found:** {len(items)}")
+                        if items:
+                            st.write("**Sample Item:**")
+                            st.json(items[0])
+                        else:
+                            st.warning("No items returned. Try different tags.")
+                    else:
+                        st.error(f"API Error: {response.text}")
+                except Exception as e:
+                    st.error(f"Test failed: {str(e)}")
         
     with st.expander("Collection Settings", expanded=not st.session_state.data_collected):
         col1, col2, col3 = st.columns(3)
